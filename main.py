@@ -295,23 +295,35 @@ def main(args):
 
     output_dir = Path(args.output_dir)
     if args.resume:
-        if args.resume.startswith('https'):
-            checkpoint = torch.hub.load_state_dict_from_url(
-                args.resume, map_location='cpu', check_hash=True)
-        else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
-        if 'model' in checkpoint:
-            model_without_ddp.load_state_dict(checkpoint['model'])
-        else:
-            model_without_ddp.load_state_dict(checkpoint)
-        if not args.finetune:
-            if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
-                optimizer.load_state_dict(checkpoint['optimizer'])
-                lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-                if not args.finetune:
+            if args.resume.startswith('https'):
+                checkpoint = torch.hub.load_state_dict_from_url(
+                    args.resume, map_location='cpu', check_hash=True)
+            else:
+                # Fix for PyTorch 2.6+ - add weights_only=False for checkpoints with argparse.Namespace
+                checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
+            
+            # Load model weights
+            if 'model' in checkpoint:
+                model_without_ddp.load_state_dict(checkpoint['model'])
+            else:
+                model_without_ddp.load_state_dict(checkpoint)
+            
+            print(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
+            
+            # Load optimizer, scheduler, and epoch info (unless finetuning or just evaluating)
+            if not args.finetune and not args.eval:
+                if 'optimizer' in checkpoint:
+                    optimizer.load_state_dict(checkpoint['optimizer'])
+                    print("Loaded optimizer state")
+                if 'lr_scheduler' in checkpoint:
+                    lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+                    print("Loaded lr_scheduler state")
+                if 'epoch' in checkpoint:
                     args.start_epoch = checkpoint['epoch'] + 1
+                    print(f"Resuming from epoch {args.start_epoch}")
                 if 'scaler' in checkpoint:
                     loss_scaler.load_state_dict(checkpoint['scaler'])
+                    print("Loaded loss scaler state")
 
     if args.eval:
         if hasattr(model.module, "merge_bn"):
