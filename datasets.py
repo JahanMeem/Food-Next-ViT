@@ -12,23 +12,34 @@ from timm.data import create_transform
 
 
 class FoodDataset(Dataset):
-    """Custom Dataset for food images with CSV labels"""
+    """Custom Dataset for food images with CSV labels and calories"""
     
-    def __init__(self, csv_file, root_dir, transform=None):
+    def __init__(self, csv_file, root_dir, transform=None, predict_calories=False):
         """
         Args:
             csv_file (string): Path to the csv file with annotations.
             root_dir (string): Directory with all the images.
             transform (callable, optional): Optional transform to be applied on a sample.
+            predict_calories (bool): Whether to include calorie information
         """
         self.food_frame = pd.read_csv(csv_file)
         self.root_dir = root_dir
         self.transform = transform
+        self.predict_calories = predict_calories
         
         # Create label to index mapping
         self.classes = sorted(self.food_frame['Food_Label'].unique())
         self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
         self.nb_classes = len(self.classes)
+        
+        # Check if Calories column exists
+        if 'Calories' in self.food_frame.columns:
+            self.has_calories = True
+            # Normalize calories (divide by 1000 to bring into reasonable range)
+            self.food_frame['Calories_Normalized'] = self.food_frame['Calories'] / 1000.0
+        else:
+            self.has_calories = False
+            print("Warning: 'Calories' column not found in CSV file")
         
     def __len__(self):
         return len(self.food_frame)
@@ -44,7 +55,12 @@ class FoodDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         
-        return image, label
+        if self.predict_calories and self.has_calories:
+            # Return image, label, and calories
+            calories = self.food_frame.iloc[idx]['Calories_Normalized']
+            return image, label, calories
+        else:
+            return image, label
 
 
 class INatDataset(ImageFolder):
@@ -93,7 +109,9 @@ def build_dataset(is_train, args):
     if args.data_set == 'FOOD':
         # Use custom food dataset with CSV
         csv_file = args.train_csv if is_train else args.val_csv
-        dataset = FoodDataset(csv_file, args.data_path, transform=transform)
+        predict_calories = getattr(args, 'predict_calories', False)
+        dataset = FoodDataset(csv_file, args.data_path, transform=transform, 
+                            predict_calories=predict_calories)
         nb_classes = dataset.nb_classes
     elif args.data_set == 'CIFAR':
         dataset = datasets.CIFAR100(args.data_path, train=is_train, transform=transform)
