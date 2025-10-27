@@ -1,4 +1,3 @@
-# Copyright (c) ByteDance Inc. All rights reserved.
 from functools import partial
 
 import torch
@@ -278,9 +277,10 @@ class NTB(nn.Module):
 class NextViT(nn.Module):
     def __init__(self, stem_chs, depths, path_dropout, attn_drop=0, drop=0, num_classes=1000,
                  strides=[1, 2, 2, 2], sr_ratios=[8, 4, 2, 1], head_dim=32, mix_block_ratio=0.75,
-                 use_checkpoint=False, **kwargs):
+                 use_checkpoint=False, predict_calories=False, **kwargs):
         super(NextViT, self).__init__()
         self.use_checkpoint = use_checkpoint
+        self.predict_calories = predict_calories
 
         self.stage_out_channels = [[96] * (depths[0]),
                                    [192] * (depths[1] - 1) + [256],
@@ -330,9 +330,20 @@ class NextViT(nn.Module):
         self.norm = nn.BatchNorm2d(output_channel, eps=NORM_EPS)
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # Classification head
         self.proj_head = nn.Sequential(
             nn.Linear(output_channel, num_classes),
         )
+        
+        # Calorie regression head (if enabled)
+        if self.predict_calories:
+            self.calorie_head = nn.Sequential(
+                nn.Linear(output_channel, 256),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.2),
+                nn.Linear(256, 1)
+            )
 
         self.stage_out_idx = [sum(depths[:idx + 1]) - 1 for idx in range(len(depths))]
         print('initialize_weights...')
@@ -368,8 +379,16 @@ class NextViT(nn.Module):
         x = self.norm(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        x = self.proj_head(x)
-        return x
+        
+        # Classification output
+        class_output = self.proj_head(x)
+        
+        # If predicting calories, return both outputs
+        if self.predict_calories:
+            calorie_output = self.calorie_head(x)
+            return class_output, calorie_output
+        else:
+            return class_output
 
 
 # At the bottom of nextvit.py, replace the model registration functions with these:
