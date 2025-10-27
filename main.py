@@ -29,6 +29,12 @@ def get_args_parser():
                     help='path to train CSV file')
     parser.add_argument('--val-csv', default='test.csv', type=str,
                     help='path to validation/test CSV file')
+    
+    # Multi-task learning parameters
+    parser.add_argument('--predict-calories', action='store_true', default=False,
+                        help='Enable calorie prediction (multi-task learning)')
+    parser.add_argument('--calorie-weight', type=float, default=1.0,
+                        help='Weight for calorie loss in multi-task learning')
 
     # Model parameters
     parser.add_argument('--model', default='pvt_small', type=str, metavar='MODEL',
@@ -245,6 +251,7 @@ def main(args):
     model = create_model(
         args.model,
         num_classes=args.nb_classes,
+        predict_calories=args.predict_calories,
     )
 
     if not args.distributed or args.rank == 0:
@@ -329,8 +336,10 @@ def main(args):
         if hasattr(model.module, "merge_bn"):
             print("Merge pre bn to speedup inference.")
             model.module.merge_bn()
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, predict_calories=args.predict_calories)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+        if args.predict_calories:
+            print(f"Calorie MAE: {test_stats['cal_mae']:.4f} (normalized) = {test_stats['cal_mae']*1000:.1f} kcal")
         return
 
     if args.throughout:
@@ -340,8 +349,12 @@ def main(args):
         return
 
     print(f"Start training for {args.epochs} epochs")
+    if args.predict_calories:
+        print(f"Multi-task learning enabled: Classification + Calorie Prediction (weight={args.calorie_weight})")
     start_time = time.time()
     max_accuracy = 0.0
+    best_cal_mae = float('inf')
+    
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -351,6 +364,8 @@ def main(args):
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=True,
+            predict_calories=args.predict_calories,
+            calorie_weight=args.calorie_weight,
         )
 
         lr_scheduler.step(epoch)
@@ -366,8 +381,10 @@ def main(args):
                     'args': args,
                 }, checkpoint_path)
 
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, predict_calories=args.predict_calories)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+        
+        # Save best model based on accuracy
         if test_stats["acc1"] > max_accuracy:
             if args.output_dir:
                 checkpoint_paths = [output_dir / 'checkpoint_best.pth']
@@ -381,6 +398,12 @@ def main(args):
                     }, checkpoint_path)
         max_accuracy = max(max_accuracy, test_stats["acc1"])
         print(f'Max accuracy: {max_accuracy:.2f}%')
+        
+        # Track best calorie MAE if predicting calories
+        if args.predict_calories:
+            if 'cal_mae' in test_stats:
+                best_cal_mae = min(best_cal_mae, test_stats['cal_mae'])
+                print(f'Best Calorie MAE: {best_cal_mae:.4f} (normalized) = {best_cal_mae*1000:.1f} kcal')
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
